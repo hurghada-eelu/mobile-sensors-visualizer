@@ -80,7 +80,8 @@
         pc.ondatachannel = (e) => {
           dataChannel = e.channel;
           dataChannel.onopen = () => {
-            document.getElementById('hostStatusclassName = "status connected";
+            // FIXED LINE HERE:
+            document.getElementById('hostStatus').className = "status connected";
             document.getElementById('hostStatus').innerText = "Streaming Active";
           };
           dataChannel.onmessage = (evt) => {
