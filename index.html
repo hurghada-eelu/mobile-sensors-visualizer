@@ -6,7 +6,7 @@
   <title>Peer-to-Peer Accelerometer Streamer</title>
   <!-- QRCode.js Library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <!-- PeerJS Cloud Library (Free public signaling broker) -->
+  <!-- PeerJS Cloud Library -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
@@ -17,6 +17,7 @@
     .status { font-weight: bold; padding: 4px 8px; border-radius: 4px; display: inline-block; font-size: 0.85rem; }
     .connected { background: #166534; color: #4ade80; }
     .waiting { background: #854d0e; color: #fef08a; }
+    .error { background: #991b1b; color: #fca5a5; }
   </style>
 </head>
 <body>
@@ -51,17 +52,23 @@
   const targetPeerId = params.get('peer');
   let peer, connection;
 
+  // Explicit PeerJS cloud configuration options for reliable secure handshakes
+  const peerConfig = {
+    host: '0.peerjs.com',
+    port: 443,
+    secure: true,
+    debug: 2
+  };
+
   if (!targetPeerId) {
-    // --- HOST MODE (PC) ---
     initHost();
   } else {
-    // --- CLIENT MODE (PHONE) ---
     initClient(targetPeerId);
   }
 
   function initHost() {
     const hostId = 'sensor-host-' + Math.random().toString(36).substring(2, 8);
-    peer = new Peer(hostId);
+    peer = new Peer(hostId, peerConfig);
 
     peer.on('open', (id) => {
       const clientURL = `${window.location.href.split('?')[0]}?peer=${id}`;
@@ -70,6 +77,13 @@
       const hostStatus = document.getElementById('hostStatus');
       hostStatus.className = "status waiting";
       hostStatus.innerText = "Waiting for phone scan...";
+    });
+
+    peer.on('error', (err) => {
+      console.error("PeerJS Host Error:", err);
+      const hostStatus = document.getElementById('hostStatus');
+      hostStatus.className = "status error";
+      hostStatus.innerText = "Error: " + err.type;
     });
 
     peer.on('connection', (conn) => {
@@ -110,14 +124,15 @@
 
       startBtn.disabled = true;
       startBtn.innerText = "Connecting to PC...";
+      
+      const clientStatus = document.getElementById('clientStatus');
 
-      peer = new Peer();
+      peer = new Peer(peerConfig);
 
       peer.on('open', () => {
         connection = peer.connect(hostId);
 
         connection.on('open', () => {
-          const clientStatus = document.getElementById('clientStatus');
           clientStatus.className = "status connected";
           clientStatus.innerText = "Live";
           startBtn.innerText = "Streaming Motion...";
@@ -126,10 +141,20 @@
         });
 
         connection.on('error', (err) => {
-          alert("Connection error: " + err);
+          console.error("Connection error:", err);
+          clientStatus.className = "status error";
+          clientStatus.innerText = "Connection Failed";
           startBtn.disabled = false;
           startBtn.innerText = "Retry Connection";
         });
+      });
+
+      peer.on('error', (err) => {
+        console.error("PeerJS Client Error:", err);
+        clientStatus.className = "status error";
+        clientStatus.innerText = "Peer Error: " + err.type;
+        startBtn.disabled = false;
+        startBtn.innerText = "Retry Connection";
       });
     });
   }
