@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC Accelerometer Bridge</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .card { background: #1e293b; padding: 2rem; border-radius: 12px; text-align: center; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+    #qrcode { background: #fff; padding: 10px; border-radius: 6px; display: inline-block; margin: 15px 0; }
+    button { background: #38bdf8; color: #000; font-weight: bold; border: none; padding: 14px 20px; border-radius: 8px; font-size: 1rem; cursor: pointer; width: 100%; margin-top: 10px; }
+    .metric { font-family: monospace; font-size: 1.4rem; margin: 8px 0; display: flex; justify-content: space-between; background: #0f172a; padding: 8px 12px; border-radius: 6px; }
+    .status { font-weight: bold; padding: 4px 8px; border-radius: 4px; display: inline-block; font-size: 0.85rem; }
+    .connected { background: #166534; color: #4ade80; }
+    .waiting { background: #854d0e; color: #fef08a; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <!-- HOST VIEW (PC) -->
+  <div id="hostView">
+    <h2>Desktop Sensor Receiver</h2>
+    <p>Scan with your Android phone:</p>
+    <div id="qrcode"></div>
+    <p>Status: <span id="hostStatus" class="status waiting">Waiting for phone...</span></p>
+    <div class="metric"><span>X:</span> <span id="valX">0.00</span></div>
+    <div class="metric"><span>Y:</span> <span id="valY">0.00</span></div>
+    <div class="metric"><span>Z:</span> <span id="valZ">0.00</span></div>
+  </div>
+
+  <!-- CLIENT VIEW (MOBILE) -->
+  <div id="clientView" style="display: none;">
+    <h2>Mobile Motion Sender</h2>
+    <p>Status: <span id="clientStatus" class="status waiting">Ready</span></p>
+    <button id="startBtn">Start Streaming</button>
+    <div style="margin-top:20px;">
+      <div class="metric"><span>X:</span> <span id="mobileX">0.00</span></div>
+      <div class="metric"><span>Y:</span> <span id="mobileY">0.00</span></div>
+      <div class="metric"><span>Z:</span> <span id="mobileZ">0.00</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Replace with your actual deployed WebSocket signaling server URL (e.g., Render, Railway)
+  const SIGNALING_SERVER = "wss://YOUR-SIGNALING-SERVER.onrender.com";
+
+  const params = new URLSearchParams(window.location.search);
+  const role = params.get('role') || 'host';
+  let roomCode = params.get('room');
+
+  const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  let pc, dataChannel, ws;
+
+  if (role === 'host') {
+    initHost();
+  } else {
+    initClient();
+  }
+
+  function initHost() {
+    roomCode = Math.random().toString(36).substring(2, 8);
+    const clientURL = `${window.location.href.split('?')[0]}?role=client&room=${roomCode}`;
+    
+    try {
+      new QRCode(document.getElementById("qrcode"), { text: clientURL, width: 160, height: 160 });
+    } catch(e) { console.error("QR Code generation failed", e); }
+
+    ws = new WebSocket(SIGNALING_SERVER);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'join', role: 'host', room: roomCode }));
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'peer-joined') {
+        document.getElementById('hostStatus').innerText = "Connecting peer...";
+      } else if (msg.type === 'offer') {
+        pc = new RTCPeerConnection(rtcConfig);
+        pc.ondatachannel = (e) => {
+          dataChannel = e.channel;
+          dataChannel.onopen = () => {
+            document.getElementById('hostStatusclassName = "status connected";
+            document.getElementById('hostStatus').innerText = "Streaming Active";
+          };
+          dataChannel.onmessage = (evt) => {
+            const data = JSON.parse(evt.data);
+            document.getElementById('valX').innerText = data.x;
+            document.getElementById('valY').innerText = data.y;
+            document.getElementById('valZ').innerText = data.z;
+          };
+        };
+        pc.onicecandidate = (e) => {
+          if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, room: roomCode }));
+        };
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', answer, room: roomCode }));
+      } else if (msg.type === 'candidate' && pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      }
+    };
+  }
+
+  function initClient() {
+    document.getElementById('hostView').style.display = 'none';
+    document.getElementById('clientView').style.display = 'block';
+
+    const startBtn = document.getElementById('startBtn');
+    startBtn.addEventListener('click', async () => {
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res !== 'granted') { alert('Sensor permission denied'); return; }
+        } catch(e) { console.error(e); }
+      }
+
+      startBtn.disabled = true;
+      startBtn.innerText = "Connecting...";
+
+      ws = new WebSocket(SIGNALING_SERVER);
+      ws.onopen = async () => {
+        ws.send(JSON.stringify({ type: 'join', role: 'client', room: roomCode }));
+        pc = new RTCPeerConnection(rtcConfig);
+        dataChannel = pc.createDataChannel("accelerometer", { ordered: false, maxRetransmits: 0 });
+
+        dataChannel.onopen = () => {
+          document.getElementById('clientStatus').className = "status connected";
+          document.getElementById('clientStatus').innerText = "Live";
+          startBtn.innerText = "Streaming Motion...";
+          window.addEventListener('devicemotion', handleMotion);
+        };
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, room: roomCode }));
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: 'offer', offer, room: roomCode }));
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+        } else if (msg.type === 'candidate' && pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+        }
+      };
+    });
+  }
+
+  function handleMotion(event) {
+    const acc = event.accelerationIncludingGravity || event.acceleration;
+    if (!acc) return;
+    const data = {
+      x: parseFloat((acc.x || 0).toFixed(2)),
+      y: parseFloat((acc.y || 0).toFixed(2)),
+      z: parseFloat((acc.z || 0).toFixed(2))
+    };
+    document.getElementById('mobileX').innerText = data.x;
+    document.getElementById('mobileY').innerText = data.y;
+    document.getElementById('mobileZ').innerText = data.z;
+
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(JSON.stringify(data));
+    }
+  }
+</script>
+</body>
+</html>
