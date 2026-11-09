@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Peer-to-Peer Accelerometer Streamer</title>
-  <!-- QRCode.js Library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <!-- PeerJS Cloud Library -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
@@ -52,12 +50,11 @@
   const targetPeerId = params.get('peer');
   let peer, connection;
 
-  // Explicit PeerJS cloud configuration options for reliable secure handshakes
   const peerConfig = {
     host: '0.peerjs.com',
     port: 443,
     secure: true,
-    debug: 2
+    debug: 3 // High debug level to print everything to console
   };
 
   if (!targetPeerId) {
@@ -68,9 +65,11 @@
 
   function initHost() {
     const hostId = 'sensor-host-' + Math.random().toString(36).substring(2, 8);
+    console.log("Initializing host with ID:", hostId);
     peer = new Peer(hostId, peerConfig);
 
     peer.on('open', (id) => {
+      console.log("Host peer open with ID:", id);
       const clientURL = `${window.location.href.split('?')[0]}?peer=${id}`;
       new QRCode(document.getElementById("qrcode"), { text: clientURL, width: 160, height: 160 });
       
@@ -80,16 +79,17 @@
     });
 
     peer.on('error', (err) => {
-      console.error("PeerJS Host Error:", err);
-      const hostStatus = document.getElementById('hostStatus');
-      hostStatus.className = "status error";
-      hostStatus.innerText = "Error: " + err.type;
+      console.error("Host PeerJS Error:", err);
+      document.getElementById('hostStatus').className = "status error";
+      document.getElementById('hostStatus').innerText = "Error: " + err.type;
     });
 
     peer.on('connection', (conn) => {
+      console.log("Incoming connection from client!");
       connection = conn;
       
       connection.on('open', () => {
+        console.log("Data connection open!");
         const hostStatus = document.getElementById('hostStatus');
         hostStatus.className = "status connected";
         hostStatus.innerText = "Streaming Active";
@@ -102,6 +102,7 @@
       });
 
       connection.on('close', () => {
+        console.warn("Connection closed by peer");
         const hostStatus = document.getElementById('hostStatus');
         hostStatus.className = "status waiting";
         hostStatus.innerText = "Disconnected";
@@ -112,6 +113,7 @@
   function initClient(hostId) {
     document.getElementById('hostView').style.display = 'none';
     document.getElementById('clientView').style.display = 'block';
+    console.log("Initializing mobile client targeting host:", hostId);
 
     const startBtn = document.getElementById('startBtn');
     startBtn.addEventListener('click', async () => {
@@ -119,7 +121,7 @@
         try {
           const res = await DeviceMotionEvent.requestPermission();
           if (res !== 'granted') { alert('Sensor permission denied'); return; }
-        } catch(e) { console.error(e); }
+        } catch(e) { console.error("Permission error:", e); }
       }
 
       startBtn.disabled = true;
@@ -129,10 +131,25 @@
 
       peer = new Peer(peerConfig);
 
-      peer.on('open', () => {
-        connection = peer.connect(hostId);
+      // Timeout fail-safe if connection takes longer than 8 seconds
+      const timeoutTimer = setTimeout(() => {
+        if (!connection || !connection.open) {
+          console.error("Connection timed out!");
+          clientStatus.className = "status error";
+          clientStatus.innerText = "Connection Timed Out";
+          startBtn.disabled = false;
+          startBtn.innerText = "Retry Connection";
+        }
+      }, 8000);
+
+      peer.on('open', (id) => {
+        console.log("Client peer open with ID:", id);
+        console.log("Attempting to connect to host:", hostId);
+        connection = peer.connect(hostId, { reliable: true });
 
         connection.on('open', () => {
+          clearTimeout(timeoutTimer);
+          console.log("Client data connection successfully opened!");
           clientStatus.className = "status connected";
           clientStatus.innerText = "Live";
           startBtn.innerText = "Streaming Motion...";
@@ -141,7 +158,8 @@
         });
 
         connection.on('error', (err) => {
-          console.error("Connection error:", err);
+          clearTimeout(timeoutTimer);
+          console.error("Data connection error:", err);
           clientStatus.className = "status error";
           clientStatus.innerText = "Connection Failed";
           startBtn.disabled = false;
@@ -150,7 +168,8 @@
       });
 
       peer.on('error', (err) => {
-        console.error("PeerJS Client Error:", err);
+        clearTimeout(timeoutTimer);
+        console.error("Client PeerJS Error:", err);
         clientStatus.className = "status error";
         clientStatus.innerText = "Peer Error: " + err.type;
         startBtn.disabled = false;
