@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebRTC Accelerometer Bridge</title>
+  <title>Peer-to-Peer Accelerometer Streamer</title>
+  <!-- QRCode.js Library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- PeerJS Cloud Library (Free public signaling broker) -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
     .card { background: #1e293b; padding: 2rem; border-radius: 12px; text-align: center; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
@@ -24,7 +27,7 @@
     <h2>Desktop Sensor Receiver</h2>
     <p>Scan with your Android phone:</p>
     <div id="qrcode"></div>
-    <p>Status: <span id="hostStatus" class="status waiting">Waiting for phone...</span></p>
+    <p>Status: <span id="hostStatus" class="status waiting">Initializing Peer...</span></p>
     <div class="metric"><span>X:</span> <span id="valX">0.00</span></div>
     <div class="metric"><span>Y:</span> <span id="valY">0.00</span></div>
     <div class="metric"><span>Z:</span> <span id="valZ">0.00</span></div>
@@ -33,7 +36,7 @@
   <!-- CLIENT VIEW (MOBILE) -->
   <div id="clientView" style="display: none;">
     <h2>Mobile Motion Sender</h2>
-    <p>Status: <span id="clientStatus" class="status waiting">Ready</span></p>
+    <p>Status: <span id="clientStatus" class="status waiting">Ready to Connect</span></p>
     <button id="startBtn">Start Streaming</button>
     <div style="margin-top:20px;">
       <div class="metric"><span>X:</span> <span id="mobileX">0.00</span></div>
@@ -44,67 +47,55 @@
 </div>
 
 <script>
-  // Replace with your actual deployed WebSocket signaling server URL (e.g., Render, Railway)
-  const SIGNALING_SERVER = "wss://probable-waffle-7vr5wj679g4ghpww7-8080.app.github.dev/";
-
   const params = new URLSearchParams(window.location.search);
-  const role = params.get('role') || 'host';
-  let roomCode = params.get('room');
+  const targetPeerId = params.get('peer');
+  let peer, connection;
 
-  const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-  let pc, dataChannel, ws;
-
-  if (role === 'host') {
+  if (!targetPeerId) {
+    // --- HOST MODE (PC) ---
     initHost();
   } else {
-    initClient();
+    // --- CLIENT MODE (PHONE) ---
+    initClient(targetPeerId);
   }
 
   function initHost() {
-    roomCode = Math.random().toString(36).substring(2, 8);
-    const clientURL = `${window.location.href.split('?')[0]}?role=client&room=${roomCode}`;
-    
-    try {
+    const hostId = 'sensor-host-' + Math.random().toString(36).substring(2, 8);
+    peer = new Peer(hostId);
+
+    peer.on('open', (id) => {
+      const clientURL = `${window.location.href.split('?')[0]}?peer=${id}`;
       new QRCode(document.getElementById("qrcode"), { text: clientURL, width: 160, height: 160 });
-    } catch(e) { console.error("QR Code generation failed", e); }
+      
+      const hostStatus = document.getElementById('hostStatus');
+      hostStatus.className = "status waiting";
+      hostStatus.innerText = "Waiting for phone scan...";
+    });
 
-    ws = new WebSocket(SIGNALING_SERVER);
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'join', role: 'host', room: roomCode }));
+    peer.on('connection', (conn) => {
+      connection = conn;
+      
+      connection.on('open', () => {
+        const hostStatus = document.getElementById('hostStatus');
+        hostStatus.className = "status connected";
+        hostStatus.innerText = "Streaming Active";
+      });
 
-    ws.onmessage = async (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'peer-joined') {
-        document.getElementById('hostStatus').innerText = "Connecting peer...";
-      } else if (msg.type === 'offer') {
-        pc = new RTCPeerConnection(rtcConfig);
-        pc.ondatachannel = (e) => {
-          dataChannel = e.channel;
-          dataChannel.onopen = () => {
-            const hostStatusEl = document.getElementById('hostStatus');
-            hostStatusEl.className = "status connected";
-            hostStatusEl.innerText = "Streaming Active";
-          };
-          dataChannel.onmessage = (evt) => {
-            const data = JSON.parse(evt.data);
-            document.getElementById('valX').innerText = data.x;
-            document.getElementById('valY').innerText = data.y;
-            document.getElementById('valZ').innerText = data.z;
-          };
-        };
-        pc.onicecandidate = (e) => {
-          if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, room: roomCode }));
-        };
-        await pc.setRemoteDescription(new RTCSessionDescription(msg.offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        ws.send(JSON.stringify({ type: 'answer', answer, room: roomCode }));
-      } else if (msg.type === 'candidate' && pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-      }
-    };
+      connection.on('data', (data) => {
+        document.getElementById('valX').innerText = data.x;
+        document.getElementById('valY').innerText = data.y;
+        document.getElementById('valZ').innerText = data.z;
+      });
+
+      connection.on('close', () => {
+        const hostStatus = document.getElementById('hostStatus');
+        hostStatus.className = "status waiting";
+        hostStatus.innerText = "Disconnected";
+      });
+    });
   }
 
-  function initClient() {
+  function initClient(hostId) {
     document.getElementById('hostView').style.display = 'none';
     document.getElementById('clientView').style.display = 'block';
 
@@ -118,39 +109,28 @@
       }
 
       startBtn.disabled = true;
-      startBtn.innerText = "Connecting...";
+      startBtn.innerText = "Connecting to PC...";
 
-      ws = new WebSocket(SIGNALING_SERVER);
-      ws.onopen = async () => {
-        ws.send(JSON.stringify({ type: 'join', role: 'client', room: roomCode }));
-        pc = new RTCPeerConnection(rtcConfig);
-        dataChannel = pc.createDataChannel("accelerometer", { ordered: false, maxRetransmits: 0 });
+      peer = new Peer();
 
-        dataChannel.onopen = () => {
-          const clientStatusEl = document.getElementById('clientStatus');
-          clientStatusEl.className = "status connected";
-          clientStatusEl.innerText = "Live";
+      peer.on('open', () => {
+        connection = peer.connect(hostId);
+
+        connection.on('open', () => {
+          const clientStatus = document.getElementById('clientStatus');
+          clientStatus.className = "status connected";
+          clientStatus.innerText = "Live";
           startBtn.innerText = "Streaming Motion...";
+          
           window.addEventListener('devicemotion', handleMotion);
-        };
+        });
 
-        pc.onicecandidate = (e) => {
-          if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, room: roomCode }));
-        };
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        ws.send(JSON.stringify({ type: 'offer', offer, room: roomCode }));
-      };
-
-      ws.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
-        } else if (msg.type === 'candidate' && pc) {
-          await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-        }
-      };
+        connection.on('error', (err) => {
+          alert("Connection error: " + err);
+          startBtn.disabled = false;
+          startBtn.innerText = "Retry Connection";
+        });
+      });
     });
   }
 
@@ -162,12 +142,13 @@
       y: parseFloat((acc.y || 0).toFixed(2)),
       z: parseFloat((acc.z || 0).toFixed(2))
     };
+    
     document.getElementById('mobileX').innerText = data.x;
     document.getElementById('mobileY').innerText = data.y;
     document.getElementById('mobileZ').innerText = data.z;
 
-    if (dataChannel && dataChannel.readyState === 'open') {
-      dataChannel.send(JSON.stringify(data));
+    if (connection && connection.open) {
+      connection.send(data);
     }
   }
 </script>
